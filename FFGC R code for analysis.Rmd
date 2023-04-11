@@ -1,0 +1,1251 @@
+---
+title: "Data analysis for root trait publications"
+author: "Lee Ming Yang"
+date: '2022-11-09'
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+This R markdown file extracts out the information from "Frontiers_final (LMY 04042023).xlsx" which contains all details of the publications on roots globally outside the Neotropics. All analysis of the data loaded is also contained within this R.markdown file.
+
+Loads the data 
+
+```{r - Libraries and loading data, warning=FALSE}
+
+library(circlize)
+library(readxl)
+library(dplyr)
+library(stringr)
+library(tidyverse)
+library(ggplot2)
+library(UpSetR)
+library(knitr) 
+library(kableExtra) 
+library(DT)
+library(tm)
+library(topicmodels)
+library(reshape2)
+library(pals)
+library(SnowballC)
+library(lda)
+library(ldatuning)
+library(flextable)
+library(SentimentAnalysis)
+library(syuzhet)
+library(plotrix)
+library(tidyr)
+library(bibliometrix)
+library(bibliometrixData)
+library(kgc)
+library(topicmodels)
+library(topicdoc)
+library(doParallel)
+library(LDAvis)
+library(servr)
+library(Rfast)
+library(maps)
+library(viridis)
+library(viridisLite)
+library(tidyr)
+library(ggpubr)
+library(stringi)
+
+# Loads the raw data
+data_pubs <- read_xlsx ("C:/Users/chaoslifes/Desktop/Frontiers_Word_Templates/Frontiers_final (LMY 04042023) - Cleaned data.xlsx", trim_ws = TRUE, skip = 1, na = "NA", col_names = TRUE)
+
+# Narrows down the data to what we need
+data_pubs <- data_pubs [,-which(names(data_pubs) %in% c("Source.Title","DOI","Database"))] # Removes journal name, DOI and WoS/Scopus
+
+# Preliminary test if data is clean
+# sum(is.na(data_pubs$Article.Title)) # Should be 0
+# sum(is.na(data_pubs$Publication.Year)) 
+# sum(is.na(data_pubs$Abstract)) 
+# sum(is.na(data_pubs$Keywords)) 
+# sum(is.na(data_pubs$Country)) 
+# sum(is.na(data_pubs$`Type of study`)) 
+# sum(is.na(data_pubs$`Sp/Comm`))
+# sum(is.na(data_pubs$`CR/FR/both`))
+# sum(is.na(data_pubs$Traits)) # all should be 0, which means fully filled
+
+# Rename columns 
+colnames (data_pubs)[c(11,14,16:19)] <- c("Site.no","Study_type","Factor","Sp_comm","root_type","FR_class")
+
+```
+
+
+## Test for trait coverage across publications.
+
+```{r - Trait category analysis}
+
+# First check to see which traits are there (alot, but to check if the abbreviations are consistent)
+traits_list <- data_pubs$Traits
+
+# To check if there is any traits that have been entered wrongly
+# traits_test <- unlist(strsplit(traits_list, "; ", fixed = FALSE, perl = FALSE, useBytes = FALSE))
+# traits_uniq <- unique(traits_test)
+# sort(traits_uniq)
+# All traits entered correctly
+# rm(traits_test,traits_uniq)
+
+# Creates sets of traits for testing of binary categories
+biomass_set <- c("BGB","R:S ratio","RMF","FRB","CRB")
+morph_set <- c("SRL","SRSA","RTD","RD","RLA","root_length","root_area")
+MYC_set <- c("MYC","MYC_status")
+phys_set <- c("nitrogenase","exudates","P uptake","phosphatase","root metabolism","N uptake","root_respiration","K uptake")
+arch_set <- c("depth","RLD","RBI","RMD","fractal","18O")
+dynamics_set <- c("NPP_fineroots","decomposition","FRP","mortality","turnover","necromass","NPP_roots","dynamics (appearance/disappearance","growth","CRP","N:P mineralisation","15N")
+chemistry_set <- c("N content","P content","C content","K content","Ca content","Mg content","Mn content","Na content","C:N ratio","N:P ratio")
+water_set <- c("hydro_cond","vessel_D","water_uptake")
+others_set <- c("starch","NSC","lignin","tannin")
+
+# Empty matrix of yes/no
+traits_logic <- matrix(data = 0,nrow = length(traits_list),ncol = 9)
+colnames(traits_logic) <- c("Morphology","Mycorrhizal","Physiology","Architecture","Biomass","Dynamics","Chemistry","Water","Others")
+
+# For each publication entry, test if the traits are within one of these categories
+# If yes = 1; if no = 0
+for (ii in c(1:length(traits_list))){
+  
+  # Gets the first entry's traits
+  traits_hold <- traits_list[ii]
+  traits_hold<- unlist(strsplit(traits_hold, "; ", fixed = FALSE, perl = FALSE, useBytes = FALSE)) # This delists each trait into individual character strings
+  
+  # Runs the logic test
+  if (sum(traits_hold %in% morph_set) != 0){traits_logic[ii,1] <- 1}
+  if (sum(traits_hold %in% MYC_set) != 0){traits_logic[ii,2] <- 1}
+  if (sum(traits_hold %in% phys_set) != 0){traits_logic[ii,3] <- 1}
+  if (sum(traits_hold %in% arch_set) != 0){traits_logic[ii,4] <- 1}
+  if (sum(traits_hold %in% biomass_set) != 0){traits_logic[ii,5] <- 1}
+  if (sum(traits_hold %in% dynamics_set) != 0){traits_logic[ii,6] <- 1}
+  if (sum(traits_hold %in% chemistry_set) != 0){traits_logic[ii,7] <- 1}
+  if (sum(traits_hold %in% water_set) != 0){traits_logic[ii,8] <- 1}
+  if (sum(traits_hold %in% others_set) != 0){traits_logic[ii,9] <- 1}
+
+}
+
+# Check if each row has a sum > 0
+# rowSums(traits_logic) # All good!
+traits_logic <- data.frame(traits_logic)
+
+# GRoot study needs manual entry (global database paper)
+x <- which(grepl("GRooT",data_pubs$Article.Title))
+traits_logic[x,] <- c(1,1,1,1,1,1,1,0,1) # No water traits in GRooT
+
+# Creates upset plot
+upset(traits_logic,nsets = 9,order.by = "freq",sets.x.label = "Publications per trait category",mainbar.y.label = "Trait Intersections",line.size = 1.5,text.scale = c(1.2,1.1,1,1,1.5,0.9), mb.ratio = c(0.5,0.5))
+
+# Counts no. of publications that studied multiple traits
+trait_multiple <- rowSums(traits_logic)
+sum(trait_multiple > 1) # 174 studies
+# Counts how many publications that studied multiple traits AND did not study biomass
+trait_nobiomass <- filter(traits_logic,Biomass == 0)
+sum(rowSums(trait_nobiomass) > 1) # 29 studies
+
+```
+
+## Test for associated topics of publications.
+
+Preparation of topic modelling process - optimising model parameters.
+
+```{r - Optimising model parameters}
+
+# set options
+options(stringsAsFactors = F)         # no automatic data transformation
+options("scipen" = 100, "digits" = 4) # suppress math annotation
+
+# Gets abstracts
+abs_raw <- data_pubs$Abstract
+
+# Copying from: https://towardsdatascience.com/a-light-introduction-to-text-analysis-in-r-ea291a9865a8
+# Corpus
+corpus <- SimpleCorpus(VectorSource(abs_raw))
+
+# Cleaning process
+dfCorpus <- tm_map(corpus, content_transformer(tolower))
+# Transform to lowercase
+dfCorpus <- tm_map(dfCorpus, removeNumbers) # Remove numbers
+dfCorpus <- tm_map(dfCorpus, removePunctuation, preserve_intra_word_dashes = TRUE) # Remove punctuation
+dfCorpus <- tm_map(dfCorpus, removeWords, stopwords("english")) # Remove stop words
+dfCorpus <- tm_map(dfCorpus, stemDocument) # Stems words
+# Loads and removes extra junk words
+junk_words <- unlist(read_xlsx("C:/Users/chaoslifes/Desktop/Frontiers_Word_Templates/Frontiers_final (LMY 04042023) - Cleaned data.xlsx",sheet = "Junk Words",col_names = FALSE))
+dfCorpus <- tm_map(dfCorpus,removeWords,junk_words)
+dfCorpus <- tm_map(dfCorpus, stripWhitespace) # Remove whitespace
+
+# compute document term matrix with terms >= minimumFrequency
+minimumFrequency <- 10
+DTM <- DocumentTermMatrix(dfCorpus, control = list(bounds = list(global = c(minimumFrequency, Inf))))
+# have a look at the number of documents and terms in the matrix
+dim(DTM)
+
+# due to vocabulary pruning, we have empty rows in our DTM
+# LDA does not like this. So we remove those docs from the
+# DTM and the metadata
+sel_idx <- slam::row_sums(DTM) > 0
+DTM <- DTM[sel_idx, ]
+textdata <- abs_raw[sel_idx]
+
+# How many topics? This isn't an easy question to answer, but we can select based on a few criteria (e.g. coherence, exclusivitiy, AIC of model)
+# We tried several approaches to estimate k
+# Function for parallel processing
+calc_AIC <- function(k){
+  print(k)
+  library(topicmodels)
+  # Conducts the LDA on that specified k
+  topicModel <- LDA(DTM, k, method="Gibbs", control=list(iter = 1000, verbose = 25, alpha = 0.05))
+  # Calculates log likelihood and then saves
+  AIC_save <- AIC(topicModel)
+
+}
+
+# Preparation for parallel processing
+no_cores <- detectCores() - 1  
+cl <- makeCluster(no_cores)  
+registerDoParallel(cl)  
+
+# Conducts the loop to test AIC per k value
+result_AIC <- foreach(i=2:50) %dopar% calc_AIC(i) # Parallel processing is so MUCH FASTER
+# Preparation for graphing
+AIC_k <- unlist (result_AIC)
+AIC_k <- data.frame(k = c(2:50),AIC_k = AIC_k) # Lowest AIC derived was 18 in our run, but results will vary depending on seed. Generally, expect lowest_k to be somewhere between 17-24.
+
+# Plotting of AIC curve
+ggplot (data = AIC_k, aes(x = k)) +
+  geom_path(aes(y = AIC_k)) + 
+  geom_point(aes(y = AIC_k)) +
+  xlab("No. of topics k") + 
+  ylab("AIC")
+
+coh_mean <- NA
+ex_mean <- NA
+
+# Runs a loop for values of k to judge topic coherence and exclusivity (higher the better)
+for (ii in c(2:50)){
+  # Set k = no.of topics 
+  k <- ii
+  # Compute the LDA model, inference via 500 iterations of Gibbs sampling
+  topicModel <- LDA(DTM, k, method="Gibbs", control=list(iter = 500, verbose = 25, seed = seed.no, alpha = 0.05))
+  # Topic diagnostics
+  coherence_score <- mean(topic_coherence(topicModel,DTM,top_n_tokens = 15))
+  exclusion_score <- mean(topic_exclusivity(topicModel,top_n_tokens = 15))
+
+  # Saves the means
+  coh_mean <- rbind(coh_mean,mean(coherence_score))
+  ex_mean <- rbind(ex_mean,mean(exclusion_score))
+}
+
+coh_mean <- coh_mean[-1,]
+ex_mean <- ex_mean[-1,]
+
+# Plots graph of coherence
+df_means <- data.frame(k = c(2:50),coh_mean = coh_mean,ex_mean = ex_mean)
+
+# No discernible trend in topic coherence or exclusivity. 
+ggplot(data = df_means, aes (x = k)) +
+  geom_path (aes(y = coh_mean)) +
+  geom_path (aes(y = ex_mean))
+
+```
+
+
+Only run this portion after determining optimal value of k, the number of topics. This was determined to be k = 18 in our run, but you may encounter some variation depending on the seed.
+The general number of topics suggested by AIC is anywhere between 16-24. We can construct our topic model and link that to traits coverage here.
+
+```{r - Topic modelling}
+
+# Set k = 18, lowest AIC value
+k <- 18
+seed.no <- 123456789 # For reproducibility
+topicModel <- LDA(DTM, k, method="Gibbs", control=list(iter = 1000, verbose = 25, seed = seed.no, alpha = 0.05))
+
+# have a look a some of the results (posterior distributions)
+topic_terms <- terms(topicModel, 15)
+# Saves into .csv
+# write.csv(topic_terms,"K-topic words.csv")
+
+# Names for the 18 topics to be entered manually
+# Have a look a some of the results (posterior distributions)
+tmResult <- modeltools::posterior(topicModel)
+# for every document we have a probaility distribution of its contained topics
+theta <- tmResult$topics
+# see alpha from previous model
+attr(topicModel, "alpha")
+attr(topicModel, "beta")# Alpha is generally recommended to be 50/K. We want to reduce alpha here to make the distribution of topics more peaky within a document, since it is unlikely that a single study will cover topics so broadly
+
+# With theta, can obtain the proportion of each abstract occupied by each topic. We assume each abstract to focus on max 2-3 topics, so alpha is set low to get a "peaky" distribution. Then, we select the highest 2-3 proportion topics in each abstract to "group" said publication to 1-3 topics.
+# This grouping can be further explored using an upset diagram - similar to the traits in Sec 1.
+theta <- data.frame(theta)
+colnames(theta) <- sprintf("T%i",c(1:k)) #Just give generic col names for now
+
+theta <- tmResult$topics
+# Produces a loop that specifies two criteria for topics: 
+# 1) Needs to be >15%
+# 2) If multiple topics all >15%, needs to be top 3
+for (ii in c(1:nrow(theta))){
+  
+  # Probabilities in each document
+  theta_doc <- theta[ii,]
+  # Which topics got 15% probabilities
+  theta_15 <- which(theta_doc > 0.15)
+  
+  # Check how many topics were selected
+  # If 3 or less, can proceed to set dummy values
+  if (length(theta_15) < 4) {
+    theta[ii,theta_15] <- 1 # Set those to 1, rest of the variables can be set to 0 later
+  } else { #If 4 or more
+    top_prob <-  head(sort(theta_doc, decreasing=TRUE),3) # Arranges and select highest probabilities
+    top_ind <- which(theta_doc %in% top_prob) # Gets their indices
+    theta[ii,top_ind] <- 1 # Use indices to set topics to 1
+    
+  }
+}
+
+# Then replace all the non-1s into zeroes
+theta[theta != 1] <- 0
+rowSums(theta) # No. of topics each study looks at (3 or less for all; some have 4 due to close ties)
+
+
+
+
+# Reloads traits_logic and theta (if you want to skip the computational steps above)
+theta <- read_xlsx("C:/Users/chaoslifes/Desktop/Frontiers_Word_Templates/Frontiers_final (LMY 04042023) - Cleaned data.xlsx",trim_ws = TRUE, na = "NA", col_names = TRUE,sheet = "theta")
+traits_logic <- read_xlsx("C:/Users/chaoslifes/Desktop/Frontiers_Word_Templates/Frontiers_final (LMY 04042023) - Cleaned data.xlsx",trim_ws = TRUE, na = "NA", col_names = TRUE, sheet = "traits")
+# Some publications still have 4 topics because of a tie in probabilities. Document 174,261,303,321 have 4 topics
+
+# Explores which of these topics are studied in conjunction
+# Needs title of trait categories
+# Full column names
+colnames(theta) <- c("Global variation",
+                     "Experimental responses",
+                     "Functional traits",
+                     "Litter decomposition",
+                     "Root profile (depth)",
+                     "Soil respiration",
+                     "Allometry",
+                     "Ecosystem productivity",
+                     "Forests",
+                     "Water limitation",
+                     "Plant nutrients",
+                     "Seedling inoculation",
+                     "Light availability",
+                     "Species composition",
+                     "Mycorrhizal colonisation",
+                     "Savannas",
+                     "Root dynamics",
+                     "Nutrient availability")
+theta <- as.data.frame(theta)                     
+
+# Compute an adjacency matrix based on the presence/absence of trait categories and topics 
+adj_matrix <- as.matrix(t(theta[,])) %*% as.matrix(traits_logic[,])
+adj.matrix <- as.data.frame(adj_matrix)
+
+# Chord diagram
+# Gets percentage of each topic
+proportion_topic <- (colSums(theta)/352)*100
+proportion_topic
+topic_label <- sprintf("%.2f%%",proportion_topic)
+# Gets percentage of each trait
+proportion_trait <- (colSums(traits_logic)/nrow(traits_logic))*100
+proportion_trait
+trait_label <- sprintf("%.2f%%",proportion_trait)
+# Combine percentage labels to loop through each sector
+labels_all <- c(topic_label,trait_label)
+# Change names of rows
+row.names(adj_matrix) <- sprintf("T%i",c(1:ncol(theta)))
+
+grid.col <- c(T1 = "#757C18",
+              T2 = "#757C18",
+              T3 = "#EAC300",
+              T4 = "#A9180D",
+              T5 = "#EAC300",
+              T6 = "#A9180D",
+              T7 = "#234F1E",
+              T8 = "#234F1E",
+              T9 = "#2EC06D",
+              T10 = "#016064",
+              T11 = "#EAC300",
+              T12 = "#0AE1FE",
+              T13 = "#016064",
+              T14 = "#231709",
+              T15 = "#0AE1FE",
+              T16 = "#2EC06D",
+              T17 = "#EAC300",
+              T18 = "#016064",
+              Morphology = "#ced0da",
+              Mycorrhizal = "#ced0da",
+              Physiology = "#ced0da",
+              Architecture = "#ced0da",
+              Biomass = "#ced0da",
+              Dynamics = "#ced0da",
+              Chemistry = "#ced0da",
+              Water = "#ced0da",
+              Others = "#ced0da")
+
+# Following this arrangement means the need to rearrange labels
+index <- c(7,8,3,5,11,17,10,13,18,9,16,12,15,4,6,14,1,2, # Topics
+           19,20,21,22,23,24,25,26,27) # Traits
+labels_all <- labels_all[index]
+# Colour some labels white for easy visibility
+col_labels <- c("white","white", # Allometry and productivity
+                "black","black","black","black", # Traits
+                "white","white","white", # Resource limitation
+                "black","black", # Ecosystems
+                "black","black", # Mycorrhizal
+                "white","white", # Soils
+                "white", # Species composition
+                "white","white", # Global change
+                "black","black","black","black","black",
+                "black","black","black","black")
+
+# Plots track
+# Set parameters for chord tracks
+circos.par(start.degree = 270)
+chordDiagram(adj_matrix, 
+             annotationTrack = "grid", 
+             preAllocateTracks = 1, 
+             grid.col = grid.col, # Colour of sectors
+             big.gap = 17, # Controls gap between rows and columns
+             small.gap = 1.5, # Controls gaps between sectors
+             annotationTrackHeight = c(0.2,0.01),
+             order = c("T7","T8",
+                       "T3","T5","T11","T17",
+                       "T10","T13","T18",
+                       "T9","T16",
+                       "T12","T15",
+                       "T4","T6",
+                       "T14",
+                       "T1","T2",
+                       "Morphology","Mycorrhizal","Physiology",
+                       "Architecture","Biomass","Dynamics","Chemistry",
+                       "Water","Others")) # Controls thickness of borders
+
+# Runs loop to enter each sector and place label
+for(ii in c(1:length(labels_all))) {
+  # x and y coordinates of each sector
+  xlim = get.cell.meta.data("xlim", sector.index = get.all.sector.index()[ii], track.index = 1)
+  ylim = get.cell.meta.data("ylim", sector.index = get.all.sector.index()[ii], track.index = 1)
+  # Enters text
+  circos.text(mean(xlim), mean(ylim)-1.4, # Need to cut down by 1.4 to keep percentage labels in cell
+              labels_all[ii], 
+              sector.index = get.all.sector.index()[ii], # Retrieves the sector names, but is not shown in the diagram (edited manually)
+              track.index = 1, 
+              facing = "clockwise", 
+              niceFacing = TRUE, #
+              col = col_labels[ii], 
+              adj = c(0,0.5),
+              cex = 0.6) # Size
+}
+
+circos.clear()
+
+```
+
+Codes to count number of publications of specific criteria for in-text numbers.
+
+```{r - Counting topics}
+
+print((colSums(theta))) # Proportion of each topic
+
+# Counting filter by topic category
+topic_biomass <- theta %>% filter(Allometry != 0|`Ecosystem productivity`!= 0) #83 studies
+topic_function <- theta %>% filter(`Functional traits` != 0|
+                                     `Root profile (depth)` != 0|
+                                     `Root dynamics` != 0|
+                                     `Plant nutrients` != 0) #162 studies
+topic_MYC <- theta %>% filter(`Mycorrhizal colonisation` != 0|
+                                `Seedling inoculation` != 0) #86 studies
+topic_resources <- theta %>% filter(`Water limitation` != 0|
+                                      `Nutrient availability` != 0|
+                                      `Light availability` != 0) # 130 studies
+topic_soil <- theta %>% filter(`Soil respiration` != 0|
+                                 `Litter decomposition` != 0) #64 studies
+topic_ecosystems <- theta %>% filter(`Forests` != 0|
+                                       `Savannas` != 0) #89 studies
+topic_global <- theta %>% filter(`Global variation` != 0|
+                                   `Experimental responses` != 0) #78 studies
+topic_sp <- theta %>% filter(`Species composition` != 0) #23 studies
+
+```
+
+## Ancillary information of publications.
+
+How is trait information represented? We ask:
+- Is trait information usually at the species or community-level?
+- What environmental variables are of interest in experimental studies?
+- What environments are usually studied in in-situ sites?
+- What is the criteria used for fine/coarse roots used?
+
+```{r - Breakdown into different study types}
+
+# Classify studies based on type
+study_type <- data.frame(type = data_pubs$Study_type,env = data_pubs$Env,var = data_pubs$Factor)
+study_type <- study_type %>% mutate(Meta = str_detect(type,"Meta"),
+                                    insitu = str_detect(type,c("Field_obs|Field_manipulation|Field_grown|Exp_plots_I")),
+                                    exsitu = str_detect(type,c("Glasshouse|Greenhouse|Shadehouse|Potted|Nursery|Exp_plots_X")))
+# Count
+sum(study_type$Meta) # 45 studies
+sum(study_type$insitu) # 234 studies
+sum(study_type$exsitu) # 78; 4 both
+
+# Count how many studies are species/community
+sp_comm <- as.data.frame(data_pubs$Sp_comm)
+colnames(sp_comm) <- "Sp_comm"
+sp_comm <-  mutate(sp_comm,Sp = grepl("Species",Sp_comm,fixed = TRUE), Comm = grepl("Community",Sp_comm,fixed = TRUE))
+
+# Merge both dataframes with the raw data
+breakdown.df <- cbind(data_pubs$Article.Title,sp_comm,study_type,data_pubs$root_type,data_pubs$FR_class)
+colnames(breakdown.df)[c(11:12)] <- c("CR/FR","Criteria")
+# Filter by study type
+insitu_breakdown <- breakdown.df %>% filter(insitu == TRUE)
+exsitu_breakdown <- breakdown.df %>% filter(exsitu == TRUE)
+meta_breakdown <- breakdown.df %>% filter(Meta == TRUE)
+
+```
+
+```{r - Sp/Comm}
+
+# For in-situ studies, is data species/community level?
+sum(insitu_breakdown$Sp) #91 studies
+sum(insitu_breakdown$Comm) # 145 studies; 3 overlap
+# Pie chart - 88 species; 142 communities; 3 both
+slices <- c(88,142,3) 
+par(bg=NA)
+pie(slices,labels = NA,col = c("#3DED97","#74B72E","#354A21"),cex = 2)
+
+# For ex-situ studies, all studies should be species-based 
+sum(exsitu_breakdown$Sp) # 78 studies; obvious since the experiment is manipulated manually
+# Pie chart - 78 for ex-situ studies (all species based)
+slices <- c(78)
+par(bg=NA)
+pie(slices,labels = NA,col = c("#BDD7EE"),cex = 2)
+
+# For meta studies, is data species/community level?
+sum(meta_breakdown$Sp) # 6 studies
+sum(meta_breakdown$Comm) # 40 studies, 1 overlap
+
+# Pie chart - 5,39,1 for meta analyses type studies
+slices <- c(5,39,1)
+par(bg=NA)
+pie(slices,labels = NA,col = c("#C5C6D0","#59515E","#232023"),cex = 2)
+
+```
+
+```{r - Insitu and meta environments}
+
+# For in-situ studies, which environment?
+insitu_env<- unlist(strsplit(insitu_breakdown$env, "; ", fixed = FALSE, perl = FALSE, useBytes = FALSE))
+table(insitu_env)
+insitu_env.df <- data.frame(Env = c("Forest","Grassland","Heath","Savanna","Disturbance","Agroforest","Mangrove","Others"),Count = c(163,12,11,22,24,8,16,14))
+insitu_env.df$Env <- factor(insitu_env.df$Env,levels = c("Forest","Disturbance","Savanna","Mangrove","Grassland","Heath","Agroforest","Others"),ordered = T)
+
+ggplot(data=insitu_env.df) +
+  geom_col(aes(x = Env, y = Count)) +
+  theme(axis.text.x = element_text(angle = 45,hjust = 1)) +
+  xlab("Environment") +
+  ylab("No. of studies") +
+  theme(rect = element_rect(fill = "transparent"),
+        text = element_text(size = 18))
+
+# For meta-analysis, which env?
+meta_env<- unlist(strsplit(meta_breakdown$env, "; ", fixed = FALSE, perl = FALSE, useBytes = FALSE))
+table(meta_env)
+meta_env.df <- data.frame(Env = c("Forest","Grassland","Savanna","Mangrove","Others"),Count = c(29,9,5,2,13))
+meta_env.df$Env <- factor(meta_env.df$Env, levels = c("Forest","Grassland","Savanna","Mangrove","Others"),ordered = T)
+                          
+ggplot(data=meta_env.df) +
+  geom_col(aes(x = Env, y = Count)) +
+  theme(axis.text.x = element_text(angle = 45,hjust = 1)) +
+  xlab("Environment") +
+  ylab("No. of studies") +
+  theme(rect = element_rect(fill = "transparent"),
+        text = element_text(size = 18))
+                  
+```
+
+```{r - Exsitu variables}
+
+# For ex-situ studies, which variables?
+exsitu_var <- unlist(strsplit(exsitu_breakdown$var, "; ", fixed = FALSE, perl = FALSE, useBytes = FALSE))
+table(exsitu_var)
+
+# Creates long format for ggplotting of variables tested
+# Disturbance includes fire, flooding and pruning
+# Nutrients include nutrients, N and P
+# Others include all other variables
+exsitu_var.df <- data.frame(Variable = c("Light","Water","Disturbance","Nutrients","Temperature","CO2","Mycorrhizal","Others"),
+                            Count = c(21,12,8,21,1,3,15,24)) 
+exsitu_var.df$Variable <- factor(exsitu_var.df$Variable,levels =
+c("Nutrients","Light","Mycorrhizal","Water","Disturbance","CO2","Temperature","Others"),ordered = T)                                  
+exp1 <- expression("CO"[2])
+ggplot(data=exsitu_var.df) +
+  geom_col(aes(x = Variable, y = Count)) +
+  theme(axis.text.x = element_text(angle = 45,hjust = 1)) +
+  scale_x_discrete(labels = c("Nutrients","Light","Mycorrhizal","Water","Disturbance",exp1,"Temperature","Others")) +
+  xlab("Variable manipulated") +
+  ylab("No. of studies") +
+  theme(rect = element_rect(fill = "transparent"),
+        text = element_text(size = 18))
+
+```
+
+```{r - Criteria for distinguishing FR/CR in in-situ studies}
+
+# Breakdown of in-situ studies (whether they study CR/FR) and how they distinguished
+# Unfortunately, most studies were unclear if they distinguished between the 2
+# First, filters out the studies that clearly employed such a criteria to distinguish
+insitu_disting <- insitu_breakdown %>% filter(Criteria != "Unknown" & !is.na(Criteria)) # 116 studies
+# This also means 233-116 = 117 studies did not distinguish CR/FR clearly
+# Among the 116 studies, did they study CR/FR/both?
+insitu_CRFR <- unlist(strsplit(insitu_disting$`CR/FR`, "; ", fixed = FALSE, perl = FALSE, useBytes = FALSE))
+table(insitu_CRFR) #39 both; 2 CR only; 75 FR
+
+# Pie chart - 39 both,2 CR,75 FR,117 unknown
+slices <- c(39,75,2,117)
+par(bg=NA)
+pie(slices,labels = NA,col = c("#dc731c","#7eb7e8","#257675","#808080"),cex = 2)
+
+# Among those that did, what criteria did they use?
+insitu_crit <- unlist(strsplit(insitu_disting$Criteria, "; ", fixed = FALSE, perl = FALSE, useBytes = FALSE))
+criteria.df <- as.data.frame(table(insitu_crit))
+criteria.df$insitu_crit <- factor(criteria.df$insitu_crit,levels = c("<10mm","<5mm","<3mm","<2mm","<1mm","Diameter class","Order"),ordered = T)
+
+ggplot(data=criteria.df) +
+  geom_col(aes(x = insitu_crit, y = Freq)) +
+  theme(axis.text.x = element_text(angle = 45,hjust = 1)) +
+  xlab("Fine-root criteria") +
+  ylab("No. of studies") +
+  theme(rect = element_rect(fill = "transparent"),
+        text = element_text(size = 18)) +
+  scale_x_discrete(labels = c("<10mm","<5mm","<3mm","<2mm","<1mm","Diameter class","Order"))
+
+```
+
+```{r - Criteria for distinguishing FR/CR in ex-situ studies}
+
+# Breakdown of ex-situ studies (whether they study CR/FR) and how they distinguished
+# Unfortunately, most studies were unclear if they distinguished between the 2
+# First, filters out the studies that clearly employed such a criteria to distinguish
+exsitu_disting <- exsitu_breakdown %>% filter(Criteria != "Unknown" & !is.na(Criteria)) # 9 studies
+# This also means 78-9 = 69 studies did not distinguish CR/FR clearly
+# Among the 9 studies, did they study CR/FR/both?
+exsitu_CRFR <- unlist(strsplit(exsitu_disting$`CR/FR`, "; ", fixed = FALSE, perl = FALSE, useBytes = FALSE))
+table(exsitu_CRFR) #4 both; 5 FR
+
+# Pie chart - 4 both, 5 FR, 69 unknown
+slices <- c(4,5,69)
+par(bg=NA)
+pie(slices,labels = NA,col = c("#dc731c","#7eb7e8","#808080"),cex = 2)
+
+# Among those that did, what criteria did they use?
+exsitu_crit <- unlist(strsplit(exsitu_disting$Criteria, "; ", fixed = FALSE, perl = FALSE, useBytes = FALSE))
+criteria.df <- as.data.frame(table(exsitu_crit))
+criteria.df$exsitu_crit <- factor(criteria.df$exsitu_crit,levels = c("<2mm","Order"),ordered = T)
+
+ggplot(data=criteria.df) +
+  geom_col(aes(x = exsitu_crit, y = Freq)) +
+  theme(axis.text.x = element_text(angle = 45,hjust = 1)) +
+  xlab("Fine-root criteria") +
+  ylab("No. of studies") +
+  theme(rect = element_rect(fill = "transparent"),
+        text = element_text(size = 18))
+
+```
+
+```{r - Criteria for distinguishing FR/CR in meta studies}
+
+# Breakdown of ex-situ studies (whether they study CR/FR) and how they distinguished
+# Unfortunately, most studies were unclear if they distinguished between the 2
+# First, filters out the studies that clearly employed such a criteria to distinguish
+meta_disting <- meta_breakdown %>% filter(Criteria != "Unknown" & !is.na(Criteria)) # 18 studies
+# This also means 45-18 = 27 studies did not distinguish CR/FR clearly
+# Among the 18 studies, did they study CR/FR/both?
+meta_CRFR <- unlist(strsplit(meta_disting$`CR/FR`, "; ", fixed = FALSE, perl = FALSE, useBytes = FALSE))
+table(meta_CRFR) #6 both; 1 CR; 11 FR
+
+# Pie chart - 6 both, 1 CR, 11 FR, 27 unknown
+slices <- c(6,11,1,27)
+par(bg=NA)
+pie(slices,labels = NA,col = c("#dc731c","#7eb7e8","#257675","#808080"),cex = 2)
+
+# Among those that did, what criteria did they use?
+meta_crit <- unlist(strsplit(meta_disting$Criteria, "; ", fixed = FALSE, perl = FALSE, useBytes = FALSE))
+criteria.df <- as.data.frame(table(meta_crit))
+criteria.df$meta_crit <- factor(criteria.df$meta_crit,levels = c("<5mm","<2mm","Diameter_class","functional_class","Order","All"),ordered = T)
+
+ggplot(data=criteria.df) +
+  geom_col(aes(x = meta_crit, y = Freq)) +
+  theme(axis.text.x = element_text(angle = 45,hjust = 1)) +
+  xlab("Fine-root criteria") +
+  ylab("No. of studies") +
+  theme(rect = element_rect(fill = "transparent"),
+        text = element_text(size = 18)) +
+  scale_x_discrete(labels = c("<5mm","<2mm","Diameter class","Functional class","Order","Multiple")) +
+  scale_y_continuous(breaks = seq(from = 0, to = 16, by = 2))
+
+```
+
+
+
+## Geographical coverage of traits and topics.
+
+Plots the world map of sites. 
+
+```{r - Plots world map}
+
+# Plotting of studies on a world map only makes sense for in-situ studies (aka field studies)
+# Classify studies based on type
+study_type <- data.frame(type = data_pubs$Study_type,env = data_pubs$Env,var = data_pubs$Factor)
+study_type <- study_type %>% mutate(Meta = str_detect(type,"Meta"),
+                                    insitu = str_detect(type,c("Field_obs|Field_manipulation|Field_grown|Exp_plots_I")),
+                                    exsitu = str_detect(type,c("Glasshouse|Greenhouse|Shadehouse|Potted|Nursery|Exp_plots_X")))
+# Count
+sum(study_type$Meta) # 45 studies
+sum(study_type$insitu) # 233 studies
+sum(study_type$exsitu) # 78 studies; 4 both 
+# write.csv(study_type,"C:/Users/chaos/Desktop/Network Analysis (Chapter 1)/study_type.csv") # To save
+
+# Traits binary
+traits_logic <- read_xlsx("C:/Users/chaoslifes/Desktop/Frontiers_Word_Templates/Frontiers_final (LMY 04042023) - Cleaned data.xlsx",trim_ws = TRUE, na = "NA", col_names = TRUE, sheet = "traits")
+# Topics binary
+topics_logic <- read_xlsx("C:/Users/chaoslifes/Desktop/Frontiers_Word_Templates/Frontiers_final (LMY 04042023) - Cleaned data.xlsx",trim_ws = TRUE, na = "NA", col_names = TRUE,sheet = "theta")
+# Study type
+study_type <- read_xlsx("C:/Users/chaoslifes/Desktop/Frontiers_Word_Templates/Frontiers_final (LMY 04042023) - Cleaned data.xlsx",trim_ws = TRUE, na = "NA", col_names = TRUE,sheet = "study_type")
+# Pulls out individual sites data
+multi_sites <- read_xlsx("C:/Users/chaoslifes/Desktop/Frontiers_Word_Templates/Frontiers_final (LMY 04042023) - Cleaned data.xlsx", sheet = "Multi_locations", trim_ws = TRUE, na = "NA", col_names = TRUE) # This last sheet is used as a pivot table for studies with multiple field sites
+
+# Creates a new dataframe for coordinates, location, traits and topics
+geog_df <- data_pubs[,c("Article.Title","Publication.Year","DOI_name","Lat","Long","Site.no","Country")]
+geog_df <- cbind(geog_df,study_type,traits_logic,topics_logic)
+# Filters out insitu studies (b/c it makes sense to map out those studies on a map)
+geog_map <- geog_df %>% filter(insitu == "TRUE")
+  
+# Preps all the datapoints to plot first
+# First, gets all the studies with multiple sites
+geog_multi <- geog_map %>% dplyr::filter(Site.no > 1)  #Multiple sites
+geog_single <- geog_map %>% filter(Site.no == 1) # Single sites
+
+# Retrieves coordinates of all the sites from the multisites list
+colnames(multi_sites)[1] <- "DOI_name"
+coord_multi <- multi_sites %>% filter(DOI_name %in% geog_multi$DOI_name)
+coord_multi <- coord_multi[,c(1:3)]
+# Then combines with the geog_single coordinates
+geog_single <- geog_single[,c(3,4,5)] # Single sites only
+coord_total <- rbind(geog_single,coord_multi) # This is a dataframe to plot sites ONLY 
+
+# Preps the dataframe that decides the colours of each country
+# Colours will denote the no. of studies within each country
+countries_raw <- geog_map$Country
+# Replace Borneo(I) with Indonesia; replace Borneo(M) with Malaysia
+countries_raw <- gsub("Borneo(M)","Malaysia",countries_raw,fixed = TRUE)
+countries_raw <- gsub("Borneo(I)","Indonesia",countries_raw,fixed = TRUE)
+# Delist to count
+countries_delist <- unlist(strsplit(countries_raw, "; ", fixed = FALSE, perl = FALSE, useBytes = FALSE))
+countries_count <- count(countries_delist)
+colnames(countries_count)[1] <- "region"
+
+# Generic worldmap
+world <- map_data("world")
+# Merge with countries count
+world_count <- left_join(world,countries_count,by = "region") # Many countries will probably have no studies; they should take a freq of 0
+world_count$freq[is.na(world_count$freq)] <- 0
+# Splits the dataframe for countries with actual numerical values for colouring
+world_nonzero <- world_count %>% filter(freq > 0)
+
+ggplot(world_count, aes(long, lat, group = group))+
+  geom_polygon(fill = "grey",colour = "white",alpha = 0.5) +
+  geom_polygon(data = world_nonzero, aes(x = long, y = lat, group = group, fill = freq),colour = "white",inherit.aes = FALSE) +
+  theme_void() +
+  xlim(-30,max(world_count$long)) +
+  ylim(-45,max(world_count$lat)) +
+  geom_point(data = coord_total,aes(x = Long,y = Lat),inherit.aes = FALSE, color = "red", show.legend = TRUE, size = 1.5) +
+  geom_rect(aes(xmin = -25,
+                xmax = 170,
+                ymin = -35,
+                ymax = 35),colour = "black", fill = NA) +
+  labs(fill="No. of studies") +
+  scale_fill_gradientn(limits = c(0,50),
+                       breaks = seq(0,50,10),
+                       colours = c("#AFEAE4","#051937")) +
+  theme(legend.title=element_text(margin=margin(0,0,7,0)),
+        legend.text=element_text(size = 7))
+
+```
+
+Geographical trait coverage.
+
+```{r - Geographical trait coverage}
+
+# Obtains statistics of the in-situ studies for each geographical region
+# First area - Africa
+geog_africa <- geog_map %>% filter(Country %in% c("Ghana","Nigeria","Ivory Coast","Tanzania","Cameroon","Democratic Republic of the Congo","Uganda","Madagascar","Kenya","Ethiopia","Republic of Congo","Central Africa Republic","Burkina Faso","Rwanda","Zimbabwe","Senegal")) #45 studies
+africa_traits <- geog_africa[,c(14:22)]
+africa_topics <- geog_africa[,c(23:40)]
+colSums(africa_traits)
+(colSums(africa_traits)/nrow(africa_traits))*100
+colSums(africa_topics)
+(colSums(africa_topics)/nrow(africa_topics))*100
+
+# 2nd area - India and Nepal
+geog_india <- geog_map %>% filter(Country %in% c("India","Nepal")) # 51 observations
+india_traits <- geog_india[,c(14:22)]
+india_topics <- geog_india[,c(23:40)]
+colSums(india_traits)
+(colSums(india_traits)/nrow(india_traits))*100
+colSums(india_topics)
+(colSums(india_topics)/nrow(india_topics))*100
+
+# 3rd area - China
+geog_china <- geog_map %>% filter(Country %in% c("China")) # 27 observations
+china_traits <- geog_china[,c(14:22)]
+china_topics <- geog_china[,c(23:40)]
+colSums(china_traits)
+(colSums(china_traits)/nrow(china_traits))*100
+colSums(china_topics)
+(colSums(china_topics)/nrow(china_topics))*100
+
+# 4th area - SEA
+geog_SEA <- geog_map %>% filter(Country %in% c("Borneo(M)","Indonesia; Thailand","Indonesia","Thailand","Philippines","Vietnam","Singapore","Malaysia","Brunei","Borneo(I)","Cambodia")) # 87 observations
+SEA_traits <- geog_SEA[,c(14:22)]
+SEA_topics <- geog_SEA[,c(23:40)]
+colSums(SEA_traits)
+(colSums(SEA_traits)/nrow(SEA_traits))*100
+colSums(SEA_topics)
+(colSums(SEA_topics)/nrow(SEA_topics))*100
+
+# 5th area - Australia and Oceania
+geog_aus <- geog_map %>% filter(Country %in% c("Australia","Micronesia","Papua New Guinea","New Caledonia")) # 23 observations
+aus_traits <- geog_aus[,c(14:22)]
+aus_topics <- geog_aus[,c(23:40)]
+colSums(aus_traits)
+(colSums(aus_traits)/nrow(aus_traits))*100
+colSums(aus_topics)
+(colSums(aus_topics)/nrow(aus_traits))*100
+
+# Traits dataframe
+traits_geog <- rbind (colSums(africa_traits),colSums(india_traits), colSums(china_traits),colSums(SEA_traits),colSums(aus_traits))
+geog_regions <- c("Africa","India","China","SEA","Aus")  
+# Recorders locations
+traits_geog <- cbind(geog_regions,traits_geog)
+# Converts to long format
+traits_geog <- as.data.frame(traits_geog)
+traits_long <- pivot_longer(data = traits_geog,
+                            cols = -geog_regions,
+                            names_to = "traits",
+                            values_to = "studies_no.")
+traits_long$studies_no. <- as.numeric(traits_long$studies_no.)
+
+# Presents the above information in a balloon plot
+# Too many traits/topics categories; thus use balloon plot for easier visualisation as compared to a bar chart
+# For traits information first
+traits_long$traits <- str_replace_all(traits_long$traits,"Water_traits","Water")
+traits_long$geog_regions <- str_replace_all(traits_long$geog_regions,"Aus","Oceania")
+traits_long$geog_regions <- factor(traits_long$geog_regions,levels = c("Africa","India","China","SEA","Oceania"),ordered = T)
+
+# Balloon plot
+my_cols <- c("#F0F921FF","#E16462FF","#B12A90FF","#6A00A8FF","#0D0887FF")
+ggballoonplot(data = traits_long,fill = "value") +
+  scale_fill_gradientn(colors = my_cols,
+                       name = "No. of studies") +
+  labs(size="") 
+
+```
+
+Geographical topics coverage.
+
+```{r - Geographical topics coverage}
+
+# Topics dataframe
+topics_geog <- rbind (colSums(africa_topics),colSums(india_topics), colSums(china_topics),colSums(SEA_topics),colSums(aus_topics))
+colnames(topics_geog) <- c("Global variation",
+                     "Experimental responses",
+                     "Functional traits",
+                     "Litter decomposition",
+                     "Root profile (depth)",
+                     "Soil respiration",
+                     "Allometry",
+                     "Ecosystem productivity",
+                     "Forests",
+                     "Water limitation",
+                     "Plant nutrients",
+                     "Seedling inoculation",
+                     "Light availability",
+                     "Species composition",
+                     "Mycorrhizal colonisation",
+                     "Savannas",
+                     "Root dynamics",
+                     "Nutrient availability")
+geog_regions <- c("Africa","India","China","SEA","Aus")
+topics_geog <- cbind(geog_regions,topics_geog)
+
+# Converts to long format for plotting
+topics_geog <- as.data.frame(topics_geog)
+topics_long <- pivot_longer(data = topics_geog,
+                            cols = -geog_regions,
+                            names_to = "topics",
+                            values_to = "studies_no.")
+
+
+topics_long$geog_regions <- str_replace_all(topics_long$geog_regions,"Aus","Oceania")
+topics_long$geog_regions <- factor(topics_long$geog_regions,levels = c("Africa","India","China","SEA","Oceania"),ordered = T) # Recorders locations
+
+topics_long$topics <- factor(topics_long$topics,levels = c("Experimental responses","Global variation","Species composition","Soil respiration","Litter decomposition","Mycorrhizal colonisation","Seedling inoculation","Savannas","Forests","Nutrient availability","Light availability","Water limitation","Root dynamics","Plant nutrients","Root profile","Functional traits","Ecosystem productivity","Allometry"),ordered = T) # Reorders topics
+
+# Creates the plot
+topics_long$studies_no. <- as.numeric(topics_long$studies_no.)
+ggballoonplot(data = topics_long, fill = "value") +
+  scale_fill_gradientn(colors = my_cols,
+                       name = "No. of studies") +
+  labs(size="") 
+
+
+```
+
+
+## Temporal coverage of traits and topics. 
+
+Temporal breakdown of traits.
+
+```{r - Temporal breakdown of traits}
+
+# Renames topics by X1-18 for easier referencing
+colnames(geog_df)[c(23:40)] <- sprintf("X%i",c(1:18))
+
+# Breakdown of studies by years
+# old == before 2000
+# past == 2001-2009
+# new == 2010-2015
+# modern == 2016 onwards
+pubs_old <- geog_df %>% filter(Publication.Year <= 2000) #76 studies
+pubs_past <- geog_df %>% filter(Publication.Year <= 2009 & Publication.Year >= 2001) #81 studies
+pubs_new <- geog_df %>% filter(Publication.Year <= 2015 & Publication.Year >= 2010) #71 studies
+pubs_modern <- geog_df %>% filter(Publication.Year > 2015) #124 studies
+
+# 2000 and before
+old_traitsrank <- apply(pubs_old[,c(14:22)],2,sum)
+old_traitsrank
+old_topicsrank <- apply(pubs_old[,c(23:40)],2,sum)
+old_topicsrank
+
+# 2001-2009
+past_traitsrank <- apply(pubs_past[,c(14:22)],2,sum)
+past_traitsrank
+past_topicsrank <- apply(pubs_past[,c(23:40)],2,sum)
+past_topicsrank
+
+# 2010-2015
+new_traitsrank <- apply(pubs_new[,c(14:22)],2,sum)
+new_traitsrank
+new_topicsrank <- apply(pubs_new[,c(23:40)],2,sum)
+new_topicsrank
+
+# 2015-2021
+modern_traitsrank <- apply(pubs_modern[,c(14:22)],2,sum)
+modern_traitsrank
+modern_topicsrank <- apply(pubs_modern[,c(23:40)],2,sum)
+modern_topicsrank
+
+# Creates vector for time periods
+vect_periods <- c("Before 2000","2001-2009","2010-2015","2016-present")
+
+# Binds all sums of traits and topics by periods
+temporal_traitdf <- rbind(old_traitsrank,past_traitsrank,new_traitsrank,modern_traitsrank)
+temporal_traitdf <- as.data.frame(cbind(vect_periods,temporal_traitdf))
+row.names(temporal_traitdf) <- c(1:4)
+colnames(temporal_traitdf)[9] <- "Water"
+
+# Transforms into long df for ggplot
+temporal_traitdf <- pivot_longer(data = temporal_traitdf,
+                                 cols = -vect_periods,
+                                 names_to = "Traits",
+                                 values_to = "Count")
+colnames(temporal_traitdf)[1] <- "Time_period"
+temporal_traitdf$Count <- as.numeric(temporal_traitdf$Count)
+# Ascribes order to periods
+temporal_traitdf$Time_period <- factor(temporal_traitdf$Time_period, levels = c("Before 2000","2001-2009","2010-2015","2016-present"))
+
+# Count for total no. of studies by period
+temporal_totaldf <- data.frame(Time_period = c("Before 2000","2001-2009","2010-2015","2016-present"), Count = c(76,81,71,124)) 
+
+# Barplot + line graph
+# Grey bars in the background indicate no. of studies in total
+# Lines denote no. of studies by each trait category
+# Note that many studies have more than 1 trait category
+t1 <- ggplot(data = temporal_traitdf) +
+  geom_line(aes(x = Time_period, y = Count, group = Traits, color = Traits)) +
+  geom_point(aes(x = Time_period, y = Count, group = Traits, color = Traits), size = 2.5, shape = 18) +
+  geom_col(data = temporal_totaldf,aes(x = Time_period, y = Count),color = "grey",alpha = 0.15) +
+  xlab("Time period") +
+  ylab("No. of studies") +
+  theme_classic() +
+  scale_y_continuous(limits = c(0,130), expand = c(0,0)) +
+  scale_color_manual(values = c('#00429d','#81436b','#a36667',
+                                '#a8a695','#00ffff','#cad085',
+                                '#c6ad97','#9f9b73','#469400'),
+                        name = "Trait categories") +
+  theme(axis.text = element_text(size = 12),
+        axis.title = element_text(size = 14),
+        legend.title = element_text(size = 14),
+        legend.text = element_text(size = 12),
+        legend.position = "none")
+
+```
+
+Temporal breakdown of topics.
+
+```{r - Temporal breakdown of topics}
+
+# Prepares dataframes for topics
+# Presents information by topic categories because 18 topics is too much
+# For publications before 2000
+old_topics_sum <- pubs_old %>% mutate(Biomass_prod = case_when(X7 != 0 ~ TRUE,
+                                                                 X8 != 0 ~ TRUE,
+                                                                 TRUE ~ FALSE),
+                                        Func_traits = case_when(X3 != 0 ~ TRUE,
+                                                                X5 != 0 ~ TRUE,
+                                                                X11 != 0 ~ TRUE,
+                                                                X17 != 0 ~ TRUE,
+                                                                TRUE ~ FALSE),
+                                        Resource_ava = case_when(X10 != 0 ~ TRUE,
+                                                                X13 != 0 ~ TRUE,
+                                                                X18 != 0 ~ TRUE,
+                                                                TRUE ~ FALSE),
+                                        Eco_dyn = case_when(X9 != 0 ~ TRUE,
+                                                            X16 != 0 ~ TRUE,
+                                                            TRUE ~ FALSE),
+                                        Sp_comp = case_when(X14 != 0 ~ TRUE,
+                                                            TRUE ~ FALSE),
+                                        Mycorrhizal_test = case_when(X12 != 0 ~ TRUE,
+                                                            X15 != 0 ~ TRUE,
+                                                            TRUE ~ FALSE),
+                                        Soil_test = case_when(X4 != 0 ~ TRUE,
+                                                            X6 != 0 ~ TRUE,
+                                                            TRUE ~ FALSE),
+                                        Env_change = case_when(X1 != 0 ~ TRUE,
+                                                            X2 != 0 ~ TRUE,
+                                                            TRUE ~ FALSE))
+old_topics_sum <- old_topics_sum %>% dplyr::select(Biomass_prod:Env_change)                               
+
+# For publications 2001-2009
+past_topics_sum <- pubs_past %>% mutate(Biomass_prod = case_when(X7 != 0 ~ TRUE,
+                                                                 X8 != 0 ~ TRUE,
+                                                                 TRUE ~ FALSE),
+                                        Func_traits = case_when(X3 != 0 ~ TRUE,
+                                                                X5 != 0 ~ TRUE,
+                                                                X11 != 0 ~ TRUE,
+                                                                X17 != 0 ~ TRUE,
+                                                                TRUE ~ FALSE),
+                                        Resource_ava = case_when(X10 != 0 ~ TRUE,
+                                                                X13 != 0 ~ TRUE,
+                                                                X18 != 0 ~ TRUE,
+                                                                TRUE ~ FALSE),
+                                        Eco_dyn = case_when(X9 != 0 ~ TRUE,
+                                                            X16 != 0 ~ TRUE,
+                                                            TRUE ~ FALSE),
+                                        Sp_comp = case_when(X14 != 0 ~ TRUE,
+                                                            TRUE ~ FALSE),
+                                        Mycorrhizal_test = case_when(X12 != 0 ~ TRUE,
+                                                            X15 != 0 ~ TRUE,
+                                                            TRUE ~ FALSE),
+                                        Soil_test = case_when(X4 != 0 ~ TRUE,
+                                                            X6 != 0 ~ TRUE,
+                                                            TRUE ~ FALSE),
+                                        Env_change = case_when(X1 != 0 ~ TRUE,
+                                                            X2 != 0 ~ TRUE,
+                                                            TRUE ~ FALSE))
+past_topics_sum <- past_topics_sum %>% dplyr::select(Biomass_prod:Env_change)                                                                
+# For publications 2010-2015
+new_topics_sum <- pubs_new %>% mutate(Biomass_prod = case_when(X7 != 0 ~ TRUE,
+                                                                 X8 != 0 ~ TRUE,
+                                                                 TRUE ~ FALSE),
+                                        Func_traits = case_when(X3 != 0 ~ TRUE,
+                                                                X5 != 0 ~ TRUE,
+                                                                X11 != 0 ~ TRUE,
+                                                                X17 != 0 ~ TRUE,
+                                                                TRUE ~ FALSE),
+                                        Resource_ava = case_when(X10 != 0 ~ TRUE,
+                                                                X13 != 0 ~ TRUE,
+                                                                X18 != 0 ~ TRUE,
+                                                                TRUE ~ FALSE),
+                                        Eco_dyn = case_when(X9 != 0 ~ TRUE,
+                                                            X16 != 0 ~ TRUE,
+                                                            TRUE ~ FALSE),
+                                        Sp_comp = case_when(X14 != 0 ~ TRUE,
+                                                            TRUE ~ FALSE),
+                                        Mycorrhizal_test = case_when(X12 != 0 ~ TRUE,
+                                                            X15 != 0 ~ TRUE,
+                                                            TRUE ~ FALSE),
+                                        Soil_test = case_when(X4 != 0 ~ TRUE,
+                                                            X6 != 0 ~ TRUE,
+                                                            TRUE ~ FALSE),
+                                        Env_change = case_when(X1 != 0 ~ TRUE,
+                                                            X2 != 0 ~ TRUE,
+                                                            TRUE ~ FALSE))
+new_topics_sum <- new_topics_sum %>% dplyr::select(Biomass_prod:Env_change)   
+
+# For publications 2016 onwards
+modern_topics_sum <- pubs_modern %>% mutate(Biomass_prod = case_when(X7 != 0 ~ TRUE,
+                                                                 X8 != 0 ~ TRUE,
+                                                                 TRUE ~ FALSE),
+                                        Func_traits = case_when(X3 != 0 ~ TRUE,
+                                                                X5 != 0 ~ TRUE,
+                                                                X11 != 0 ~ TRUE,
+                                                                X17 != 0 ~ TRUE,
+                                                                TRUE ~ FALSE),
+                                        Resource_ava = case_when(X10 != 0 ~ TRUE,
+                                                                X13 != 0 ~ TRUE,
+                                                                X18 != 0 ~ TRUE,
+                                                                TRUE ~ FALSE),
+                                        Eco_dyn = case_when(X9 != 0 ~ TRUE,
+                                                            X16 != 0 ~ TRUE,
+                                                            TRUE ~ FALSE),
+                                        Sp_comp = case_when(X14 != 0 ~ TRUE,
+                                                            TRUE ~ FALSE),
+                                        Mycorrhizal_test = case_when(X12 != 0 ~ TRUE,
+                                                            X15 != 0 ~ TRUE,
+                                                            TRUE ~ FALSE),
+                                        Soil_test = case_when(X4 != 0 ~ TRUE,
+                                                            X6 != 0 ~ TRUE,
+                                                            TRUE ~ FALSE),
+                                        Env_change = case_when(X1 != 0 ~ TRUE,
+                                                            X2 != 0 ~ TRUE,
+                                                            TRUE ~ FALSE))
+modern_topics_sum <- modern_topics_sum %>% dplyr::select(Biomass_prod:Env_change) 
+
+# Now, we can safely sum within each category and bind them
+temporal_topicdf <- as.data.frame(rbind(colSums(old_topics_sum),colSums(past_topics_sum),colSums(new_topics_sum),colSums(modern_topics_sum)))
+
+# Adds periods
+temporal_topicdf <- as.data.frame(cbind(vect_periods,temporal_topicdf))
+row.names(temporal_topicdf) <- c(1:4)
+
+# Transforms into long df for ggplot
+temporal_topicdf <- pivot_longer(data = temporal_topicdf,
+                                 cols = -vect_periods,
+                                 names_to = "Topics",
+                                 values_to = "Count")
+colnames(temporal_topicdf)[1] <- "Time_period"
+temporal_topicdf$Count <- as.numeric(temporal_topicdf$Count)
+# Ascribes order to periods
+temporal_topicdf$Time_period <- factor(temporal_topicdf$Time_period, levels = c("Before 2000","2001-2009","2010-2015","2016-present"))
+# Ascribes order to topic categories 
+temporal_topicdf$Topics <- factor(temporal_topicdf$Topics ,
+                                  levels = c("Biomass_prod","Env_change","Eco_dyn","Mycorrhizal_test","Func_traits","Soil_test","Resource_ava","Sp_comp"),ordered = T)
+
+# Barplot + line graph
+# Grey bars in the background indicate no. of studies in total
+# Lines denote no. of studies by each trait category
+# Note that many studies have more than 1 trait category
+t2 <- ggplot(data = temporal_topicdf) +
+  geom_line(aes(x = Time_period, y = Count, group = Topics, color = Topics)) +
+  geom_point(aes(x = Time_period, y = Count, group = Topics, color = Topics), size = 2.5, shape = 18) +
+  geom_col(data = temporal_totaldf,aes(x = Time_period, y = Count),color = "grey",alpha = 0.15) +
+  xlab("Time period") +
+  ylab("No. of studies") +
+  theme_classic() +
+  scale_y_continuous(limits = c(0,130), expand = c(0,0)) +
+  scale_color_manual(values = c("#234F1E","#757C18","#2EC06D","#0AE1FE","#EAC300","#A9180D","#016064","#231709"),
+                   name = "Topic categories",
+                  labels = c("Biomass and productivity","Global ecosystem variation","Ecosystem-specific dynamics","Mycorrhizal","Functional traits","Soil processes","Resource availability","Biodiversity")) +
+  theme(axis.text = element_text(size = 12),
+        axis.title = element_text(size = 14),
+        legend.title = element_text(size = 14),
+        legend.text = element_text(size = 12),
+        legend.position = "none") # Remove this line for legend
+
+# For counting purposes
+# old_topics <- subset(pubs_old, select = X1:X18)
+# colnames(old_topics) <- c("Global variation",
+#                      "Experimental responses",
+#                      "Functional traits",
+#                      "Litter decomposition",
+#                      "Root profile",
+#                      "Soil respiration",
+#                      "Allometry",
+#                      "Ecosystem productivity",
+#                      "Forests",
+#                      "Water limitation",
+#                      "Plant nutrients",
+#                      "Seedling inoculation",
+#                      "Light availability",
+#                      "Species composition",
+#                      "Mycorrhizal colonisation",
+#                      "Savannas",
+#                      "Root dynamics",
+#                      "Nutrient availability")
+# colSums(old_topics)
+# past_topics <- subset(pubs_past, select = X1:X18)
+# colnames(past_topics) <- c("Global variation",
+#                      "Experimental responses",
+#                      "Functional traits",
+#                      "Litter decomposition",
+#                      "Root profile",
+#                      "Soil respiration",
+#                      "Allometry",
+#                      "Ecosystem productivity",
+#                      "Forests",
+#                      "Water limitation",
+#                      "Plant nutrients",
+#                      "Seedling inoculation",
+#                      "Light availability",
+#                      "Species composition",
+#                      "Mycorrhizal colonisation",
+#                      "Savannas",
+#                      "Root dynamics",
+#                      "Nutrient availability")
+# colSums(past_topics)
+# new_topics <- subset(pubs_new, select = X1:X18)
+# colnames(new_topics) <- c("Global variation",
+#                      "Experimental responses",
+#                      "Functional traits",
+#                      "Litter decomposition",
+#                      "Root profile",
+#                      "Soil respiration",
+#                      "Allometry",
+#                      "Ecosystem productivity",
+#                      "Forests",
+#                      "Water limitation",
+#                      "Plant nutrients",
+#                      "Seedling inoculation",
+#                      "Light availability",
+#                      "Species composition",
+#                      "Mycorrhizal colonisation",
+#                      "Savannas",
+#                      "Root dynamics",
+#                      "Nutrient availability")
+# colSums(new_topics)
+# modern_topics <- subset(pubs_modern, select = X1:X18)
+# colnames(modern_topics) <- c("Global variation",
+#                      "Experimental responses",
+#                      "Functional traits",
+#                      "Litter decomposition",
+#                      "Root profile",
+#                      "Soil respiration",
+#                      "Allometry",
+#                      "Ecosystem productivity",
+#                      "Forests",
+#                      "Water limitation",
+#                      "Plant nutrients",
+#                      "Seedling inoculation",
+#                      "Light availability",
+#                      "Species composition",
+#                      "Mycorrhizal colonisation",
+#                      "Savannas",
+#                      "Root dynamics",
+#                      "Nutrient availability")
+# colSums(modern_topics)
+
+# Merge into single image for publication
+ggarrange(t1 + rremove("xlab") + rremove("x.text"), 
+          t2, ncol = 1, nrow = 2,
+              common.legend = FALSE,
+              align = "hv", 
+              font.label = list(size = 8, color = "black", face = "bold",family = NULL))
+
+```
+
+
